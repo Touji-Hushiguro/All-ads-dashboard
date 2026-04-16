@@ -1,36 +1,92 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Ad Dashboard
 
-## Getting Started
+社内広告運用チーム向けのデイリー広告配信データ管理Webアプリ。Chrome型タブUIで案件・媒体を横断管理。
 
-First, run the development server:
+## 構成
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+```
+Next.js (Vercel)
+    ↓ fetch
+Google Apps Script (Web App)
+    ↓ read/write
+Google Sheets (案件マスタ / 広告データ / 設定)
+    ↑ sync
+Meta Graph API
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+- **Next.js 16 + React 19 + Tailwind CSS**
+- **Google Apps Script** — バックエンドAPI + Meta同期ロジック
+- **Google Sheets** — データストア（案件・広告・設定）
+- **NextAuth (Auth.js v5)** — Googleログイン（ドメイン制限）
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 機能
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- Chrome風タブで案件切り替え（DnD並び替え・追加・削除）
+- 媒体サブタブ（Meta / Google / TikTok / 全媒体合計）
+- KPIサマリーカード 14指標（広告費/IMP/Clicks/CPM/CTR/CPC/MCV/MCVR/MCPA/CV/CVR/CPA/売上/粗利）
+- KPI目標値比較ハイライト（緑=目標達成、赤=超過、黄=要注意）
+- 広告パフォーマンステーブル（全カラムソート・カラム表示切替）
+- アラートバナー（CPA/MCPA/CTR条件判定）
+- 複数トークンプール対応（アカウント別トークンを設定シートに複数登録可能）
+- 1分毎の自動Meta同期 + 30秒毎のダッシュボード自動更新
 
-## Learn More
+## ローカル開発
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm install
+npm run dev
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+`.env.local`:
+```
+NEXT_PUBLIC_GAS_URL=https://script.google.com/macros/s/xxx/exec
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+認証はローカル開発中は自動でスキップされます（`AUTH_SECRET` や `AUTH_GOOGLE_ID` が未設定の場合）。
 
-## Deploy on Vercel
+## デプロイ（Vercel）
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+1. Vercelに GitHub連携でプロジェクト作成
+2. Root Directory: `ad-dashboard`
+3. Environment Variables:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+| Key | Value |
+|-----|-------|
+| `NEXT_PUBLIC_GAS_URL` | GASウェブアプリURL |
+| `AUTH_SECRET` | `openssl rand -base64 33` で生成 |
+| `AUTH_GOOGLE_ID` | Google Cloud OAuth クライアントID |
+| `AUTH_GOOGLE_SECRET` | Google Cloud OAuth シークレット |
+| `AUTH_URL` | デプロイ先URL（例: https://xxx.vercel.app） |
+| `ALLOWED_EMAIL_DOMAINS` | `3well.co.jp`（複数ならカンマ区切り） |
+
+4. Google Cloud Console の OAuth クライアント設定:
+   - 承認済みリダイレクトURI: `https://xxx.vercel.app/api/auth/callback/google`
+
+## GAS セットアップ
+
+`gas/README.md` 参照。
+
+## ディレクトリ構成
+
+```
+ad-dashboard/
+├── app/
+│   ├── (dashboard)/        # 認証必要なダッシュボードエリア
+│   │   ├── layout.tsx      # タブレイアウト
+│   │   ├── [project]/page.tsx
+│   │   └── settings/page.tsx
+│   ├── api/auth/           # NextAuth
+│   └── signin/page.tsx     # ログイン画面
+├── components/             # UIコンポーネント
+├── lib/
+│   ├── api/                # GAS/Meta APIクライアント
+│   ├── hooks/              # React hooks
+│   └── ...
+├── gas/                    # Google Apps Script ソース
+│   ├── Code.gs
+│   ├── appsscript.json
+│   └── README.md
+├── types/index.ts
+├── auth.ts                 # NextAuth設定
+└── middleware.ts           # ルート保護
+```
