@@ -82,6 +82,9 @@ function doGet(e) {
       case 'targets':
         result = getTargets_(e.parameter.project);
         break;
+      case 'memos':
+        result = getMemos_();
+        break;
       default:
         result = { error: 'Unknown action: ' + action };
     }
@@ -109,6 +112,9 @@ function doPost(e) {
       case 'syncMeta':
         result = syncAllMetaAccounts_(body.date);
         break;
+      case 'updateMemo':
+        result = updateMemo_(body);
+        break;
       default:
         result = { error: 'Unknown action: ' + action };
     }
@@ -116,6 +122,62 @@ function doPost(e) {
   } catch (err) {
     return jsonResponse_({ error: err.message });
   }
+}
+
+// ════════════════════════════════════════
+// メモ
+// ════════════════════════════════════════
+
+var SHEET_MEMO = 'メモ';
+
+/**
+ * メモ一覧取得
+ */
+function getMemos_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(SHEET_MEMO);
+  if (!sheet) {
+    // 自動作成
+    sheet = ss.insertSheet(SHEET_MEMO);
+    sheet.getRange(1, 1, 1, 2).setValues([['ad_name', 'memo']]);
+    sheet.setFrozenRows(1);
+  }
+  var data = sheet.getDataRange().getValues();
+  var memos = {};
+  for (var i = 1; i < data.length; i++) {
+    var adName = String(data[i][0] || '').trim();
+    if (adName) memos[adName] = String(data[i][1] || '');
+  }
+  return { memos: memos };
+}
+
+/**
+ * メモ更新（upsert）
+ */
+function updateMemo_(body) {
+  var adName = body.adName;
+  var memo = body.memo;
+  if (!adName) return { error: 'adName is required' };
+
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName(SHEET_MEMO);
+  if (!sheet) {
+    sheet = ss.insertSheet(SHEET_MEMO);
+    sheet.getRange(1, 1, 1, 2).setValues([['ad_name', 'memo']]);
+    sheet.setFrozenRows(1);
+  }
+
+  var data = sheet.getDataRange().getValues();
+  // 既存行を探す
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][0]).trim() === adName) {
+      sheet.getRange(i + 1, 2).setValue(memo);
+      return { success: true, updated: true };
+    }
+  }
+  // 新規追加
+  sheet.appendRow([adName, memo]);
+  return { success: true, created: true };
 }
 
 // ════════════════════════════════════════
@@ -159,54 +221,254 @@ function getProjects_() {
   return { projects: projects, accounts: accounts };
 }
 
-function getPerformance_(projectId, platform) {
-  if (!projectId) return { error: 'project is required' };
-
+/**
+ * 広告データシート（Meta自動同期）から行を読む。最新日のみ返す。
+ */
+function readLocalPerformance_(projectId, platform) {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_PERFORMANCE);
   var data = sheet.getDataRange().getValues();
-  // 1行目=ヘッダー、2行目=説明行 なのでindex 2（3行目）からデータ
-  var rows = data.slice(2).filter(function (r) {
-    return !!r[P.DATE - 1];
-  });
+  var rows = data.slice(2).filter(function (r) { return !!r[P.DATE - 1]; });
 
-  var today = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd');
+  // 最新日を検索
+  var maxDate = '';
+  rows.forEach(function (row) {
+    if (row[P.PROJECT_ID - 1] !== projectId) return;
+    if (platform && platform !== 'all' && row[P.PLATFORM - 1] !== platform) return;
+    var rd = Utilities.formatDate(new Date(row[P.DATE - 1]), 'Asia/Tokyo', 'yyyy-MM-dd');
+    if (rd > maxDate) maxDate = rd;
+  });
 
   var filtered = rows.filter(function (row) {
     if (row[P.PROJECT_ID - 1] !== projectId) return false;
     if (platform && platform !== 'all' && row[P.PLATFORM - 1] !== platform) return false;
-    // 最新日のデータのみ返す（日付指定がなければ今日）
     var rowDate = Utilities.formatDate(new Date(row[P.DATE - 1]), 'Asia/Tokyo', 'yyyy-MM-dd');
-    return rowDate === today;
+    return rowDate === maxDate;
   });
 
-  var result = filtered.map(function (row) {
-    return {
-      id: row[P.DATE - 1] + '_' + row[P.RAW_AD_ID - 1],
-      projectId: row[P.PROJECT_ID - 1],
-      platform: row[P.PLATFORM - 1],
-      accountId: String(row[P.ACCOUNT_ID - 1]),
-      adName: row[P.AD_NAME - 1],
-      date: Utilities.formatDate(new Date(row[P.DATE - 1]), 'Asia/Tokyo', 'yyyy-MM-dd'),
-      spend: row[P.SPEND - 1] || 0,
-      impressions: row[P.IMP - 1] || 0,
-      clicks: row[P.CLICKS - 1] || 0,
-      cpm: row[P.CPM - 1] || 0,
-      ctr: row[P.CTR - 1] || 0,
-      cpc: row[P.CPC - 1] || 0,
-      mcv: row[P.MCV - 1] || 0,
-      mcvr: row[P.MCVR - 1] || 0,
-      mcpa: row[P.MCPA - 1] || 0,
-      cv: row[P.CV - 1] || 0,
-      cvr: row[P.CVR - 1] || 0,
-      cpa: row[P.CPA - 1] || 0,
-      revenue: row[P.REVENUE - 1] || 0,
-      grossProfit: row[P.GROSS_PROFIT - 1] || 0,
-      isStopped: row[P.IS_STOPPED - 1] === true || row[P.IS_STOPPED - 1] === 'TRUE',
-      rawAdId: String(row[P.RAW_AD_ID - 1]),
-    };
+  return filtered.map(mapPerformanceRow_);
+}
+
+/**
+ * Google Ads エクスポート形式の外部シートを読む
+ * 前提列構成:
+ *   1:Organization, 2:Account ID, 3:Campaign ID, 4:Campaign Name,
+ *   5:adGroup ID, 6:adGroup Name, 7:Ad ID, 8:Ad Name,
+ *   9:cost, 10:Impressions, 11:Clicks, 12:Date, 13:Updated_at
+ */
+var G_COL = {
+  ACCOUNT_ID: 2,
+  AD_ID: 7,
+  AD_NAME: 8,
+  COST: 9,
+  IMP: 10,
+  CLICKS: 11,
+  DATE: 12,
+};
+
+function readGoogleExternalSheet_(sheetUrl, sheetName, projectId) {
+  try {
+    var ss = SpreadsheetApp.openByUrl(sheetUrl);
+    var sheet = ss.getSheetByName(sheetName);
+    if (!sheet) {
+      Logger.log('External sheet not found: ' + sheetName);
+      return [];
+    }
+    var data = sheet.getDataRange().getValues();
+    // 1行目=ヘッダー
+    var rows = data.slice(1).filter(function (r) { return !!r[G_COL.DATE - 1]; });
+
+    // 案件マスタから account_id → project_id のマップを構築
+    var masterSheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_MASTER);
+    var masterData = masterSheet.getDataRange().getValues();
+    var accountToProject = {};
+    masterData.slice(2).forEach(function (mr) {
+      if (mr[M.PLATFORM - 1] === 'google' && mr[M.ACCOUNT_ID - 1]) {
+        accountToProject[String(mr[M.ACCOUNT_ID - 1]).trim()] = mr[M.PROJECT_ID - 1];
+      }
+    });
+
+    // 最新日を検索（指定projectIdに該当する行の中で）
+    var maxDate = '';
+    rows.forEach(function (row) {
+      var accId = String(row[G_COL.ACCOUNT_ID - 1]).trim();
+      var pid = accountToProject[accId];
+      if (!pid) return;
+      if (projectId && pid !== projectId) return;
+      var rd = Utilities.formatDate(new Date(row[G_COL.DATE - 1]), 'Asia/Tokyo', 'yyyy-MM-dd');
+      if (rd > maxDate) maxDate = rd;
+    });
+
+    if (!maxDate) return [];
+
+    // 最新日で絞り込み + 広告データ形式に変換
+    var result = [];
+    rows.forEach(function (row) {
+      var accId = String(row[G_COL.ACCOUNT_ID - 1]).trim();
+      var pid = accountToProject[accId];
+      if (!pid) return;
+      if (projectId && pid !== projectId) return;
+      var rd = Utilities.formatDate(new Date(row[G_COL.DATE - 1]), 'Asia/Tokyo', 'yyyy-MM-dd');
+      if (rd !== maxDate) return;
+
+      var spend = Number(row[G_COL.COST - 1]) || 0;
+      var imp = Number(row[G_COL.IMP - 1]) || 0;
+      var clicks = Number(row[G_COL.CLICKS - 1]) || 0;
+
+      result.push({
+        id: rd + '_' + row[G_COL.AD_ID - 1],
+        projectId: pid,
+        platform: 'google',
+        accountId: accId,
+        adName: row[G_COL.AD_NAME - 1],
+        date: rd,
+        spend: spend,
+        impressions: imp,
+        clicks: clicks,
+        cpm: imp > 0 ? (spend / imp) * 1000 : 0,
+        ctr: imp > 0 ? clicks / imp : 0,
+        cpc: clicks > 0 ? spend / clicks : 0,
+        mcv: 0,
+        mcvr: 0,
+        mcpa: 0,
+        cv: 0,
+        cvr: 0,
+        cpa: 0,
+        revenue: Math.round(spend * 1.2),
+        grossProfit: Math.round(spend * 0.2),
+        isStopped: false,
+        rawAdId: String(row[G_COL.AD_ID - 1]),
+      });
+    });
+
+    return result;
+  } catch (err) {
+    Logger.log('readGoogleExternalSheet_ error: ' + err.message);
+    return [];
+  }
+}
+
+/**
+ * 行データをAPIレスポンス形式にマッピング
+ */
+function mapPerformanceRow_(row) {
+  return {
+    id: row[P.DATE - 1] + '_' + row[P.RAW_AD_ID - 1],
+    projectId: row[P.PROJECT_ID - 1],
+    platform: row[P.PLATFORM - 1],
+    accountId: String(row[P.ACCOUNT_ID - 1]),
+    adName: row[P.AD_NAME - 1],
+    date: Utilities.formatDate(new Date(row[P.DATE - 1]), 'Asia/Tokyo', 'yyyy-MM-dd'),
+    spend: row[P.SPEND - 1] || 0,
+    impressions: row[P.IMP - 1] || 0,
+    clicks: row[P.CLICKS - 1] || 0,
+    cpm: row[P.CPM - 1] || 0,
+    ctr: row[P.CTR - 1] || 0,
+    cpc: row[P.CPC - 1] || 0,
+    mcv: row[P.MCV - 1] || 0,
+    mcvr: row[P.MCVR - 1] || 0,
+    mcpa: row[P.MCPA - 1] || 0,
+    cv: row[P.CV - 1] || 0,
+    cvr: row[P.CVR - 1] || 0,
+    cpa: row[P.CPA - 1] || 0,
+    revenue: row[P.REVENUE - 1] || 0,
+    grossProfit: row[P.GROSS_PROFIT - 1] || 0,
+    isStopped: row[P.IS_STOPPED - 1] === true || row[P.IS_STOPPED - 1] === 'TRUE',
+    rawAdId: String(row[P.RAW_AD_ID - 1]),
+  };
+}
+
+function getPerformance_(projectId, platform) {
+  if (!projectId) return { error: 'project is required' };
+
+  // 1. 広告データシート（Meta自動同期）から読む
+  var all = readLocalPerformance_(projectId, platform);
+
+  // 2. Google 外部シートから読む（設定シートに EXTERNAL_GOOGLE_SHEET_URL + _NAME があれば）
+  if (!platform || platform === 'all' || platform === 'google') {
+    var gUrl = getConfig_('EXTERNAL_GOOGLE_SHEET_URL');
+    var gName = getConfig_('EXTERNAL_GOOGLE_SHEET_NAME');
+    if (gUrl && gName) {
+      all = all.concat(readGoogleExternalSheet_(gUrl, gName, projectId));
+    }
+  }
+
+  // 3. ASP管理画面のCVデータで上書き（CV_API等のタブがあれば）
+  var aspCv = getAspCvData_();
+  if (aspCv.cvByAd) {
+    all = all.map(function (item) {
+      var cv = aspCv.cvByAd[item.adName];
+      if (cv !== undefined) {
+        return {
+          id: item.id,
+          projectId: item.projectId,
+          platform: item.platform,
+          accountId: item.accountId,
+          adName: item.adName,
+          date: item.date,
+          spend: item.spend,
+          impressions: item.impressions,
+          clicks: item.clicks,
+          cpm: item.cpm,
+          ctr: item.ctr,
+          cpc: item.cpc,
+          mcv: item.mcv,
+          mcvr: item.mcvr,
+          mcpa: item.mcpa,
+          cv: cv,
+          cvr: item.clicks > 0 ? cv / item.clicks : 0,
+          cpa: cv > 0 ? item.spend / cv : 0,
+          revenue: item.revenue,
+          grossProfit: item.grossProfit,
+          isStopped: item.isStopped,
+          rawAdId: item.rawAdId,
+        };
+      }
+      return item;
+    });
+  }
+
+  return { performance: all };
+}
+
+/**
+ * ASP管理画面のCVデータを読む
+ * CV_API タブから「広告」名ごとにCV件数をカウント（最新日のみ）
+ *
+ * CV_APIカラム: 成果ID(0), アフィリエイター(1), アフィリエイターID(2),
+ *              メディア(3), メディアID(4), 広告(5), 広告ID(6), pbid(7), 確定日時(8)
+ */
+function getAspCvData_() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('CV_API');
+  if (!sheet) return {};
+
+  var data = sheet.getDataRange().getValues();
+  var rows = data.slice(1); // ヘッダー除外
+
+  var CV_AD_NAME = 5; // 「広告」列 (0-indexed)
+  var CV_DATE = 8;     // 「確定日時」列
+
+  // 最新日を探す
+  var maxDate = '';
+  rows.forEach(function (row) {
+    if (!row[CV_DATE]) return;
+    var d = Utilities.formatDate(new Date(row[CV_DATE]), 'Asia/Tokyo', 'yyyy-MM-dd');
+    if (d > maxDate) maxDate = d;
   });
 
-  return { performance: result };
+  if (!maxDate) return {};
+
+  // 最新日のCV件数を広告名でカウント
+  var cvByAd = {};
+  rows.forEach(function (row) {
+    if (!row[CV_DATE]) return;
+    var d = Utilities.formatDate(new Date(row[CV_DATE]), 'Asia/Tokyo', 'yyyy-MM-dd');
+    if (d !== maxDate) return;
+    var adName = String(row[CV_AD_NAME] || '').trim();
+    if (!adName) return;
+    cvByAd[adName] = (cvByAd[adName] || 0) + 1;
+  });
+
+  return { date: maxDate, cvByAd: cvByAd };
 }
 
 function getTargets_(projectId) {

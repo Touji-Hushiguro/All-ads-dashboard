@@ -128,3 +128,16 @@ export async function syncMeta(
 ): Promise<{ success: boolean; synced: number }> {
   return gasPost({ action: 'syncMeta', date });
 }
+
+// ── Memos ──
+
+export async function fetchMemos(): Promise<{ memos: Record<string, string> }> {
+  return gasGet<{ memos: Record<string, string> }>({ action: 'memos' });
+}
+
+export async function updateMemo(
+  adName: string,
+  memo: string
+): Promise<{ success: boolean }> {
+  return gasPost({ action: 'updateMemo', adName, memo });
+}

@@ -5,6 +5,7 @@ import { ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react';
 import type { AdPerformance, KpiTarget, SortConfig, SortDirection } from '@/types';
 import { AD_COLUMNS } from '@/lib/columns';
 import { formatCurrency, formatPercent, formatNumber } from '@/lib/utils';
+import { isGasConnected, fetchMemos, updateMemo as gasUpdateMemo } from '@/lib/api/gas-client';
 import ColumnToggle from './ColumnToggle';
 
 const STORAGE_KEY = 'ad-dashboard-visible-columns-v2';
@@ -38,21 +39,35 @@ export default function AdPerformanceTable({
 }: AdPerformanceTableProps) {
   const [visibleKeys, setVisibleKeys] = useState<Set<string>>(getInitialVisibleKeys);
   const [sort, setSort] = useState<SortConfig | null>(null);
-  const [memos, setMemos] = useState<Record<string, string>>(() => {
-    if (typeof window === 'undefined') return {};
-    try {
-      const saved = localStorage.getItem(MEMO_STORAGE_KEY);
-      return saved ? JSON.parse(saved) : {};
-    } catch { return {}; }
-  });
+  const [memos, setMemos] = useState<Record<string, string>>({});
+
+  // スプレッドシートからメモを取得
+  useEffect(() => {
+    if (!isGasConnected()) return;
+    fetchMemos()
+      .then((res) => setMemos(res.memos))
+      .catch((err) => console.error('Failed to fetch memos:', err));
+  }, []);
+
+  // デバウンス用タイマー
+  const debounceRef = useCallback(() => {
+    const timers: Record<string, ReturnType<typeof setTimeout>> = {};
+    return (adName: string, value: string) => {
+      if (timers[adName]) clearTimeout(timers[adName]);
+      timers[adName] = setTimeout(() => {
+        if (isGasConnected()) {
+          gasUpdateMemo(adName, value).catch((err) =>
+            console.error('Failed to save memo:', err)
+          );
+        }
+      }, 800);
+    };
+  }, [])();
 
   const handleMemoChange = useCallback((adName: string, value: string) => {
-    setMemos((prev) => {
-      const next = { ...prev, [adName]: value };
-      localStorage.setItem(MEMO_STORAGE_KEY, JSON.stringify(next));
-      return next;
-    });
-  }, []);
+    setMemos((prev) => ({ ...prev, [adName]: value }));
+    debounceRef(adName, value);
+  }, [debounceRef]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify([...visibleKeys]));
