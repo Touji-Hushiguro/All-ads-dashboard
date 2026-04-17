@@ -59,7 +59,7 @@ interface UseGasPerformanceResult {
 }
 
 // ポーリング間隔 (ms)
-const AUTO_REFRESH_INTERVAL = 30_000; // 30秒
+const AUTO_REFRESH_INTERVAL = 10_000; // 10秒
 
 /**
  * 広告パフォーマンス + KPI目標を取得（30秒毎に自動更新）
