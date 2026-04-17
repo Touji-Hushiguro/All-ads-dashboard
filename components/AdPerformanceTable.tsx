@@ -196,7 +196,7 @@ export default function AdPerformanceTable({
                 {visibleColumns.map((col) => (
                   <td
                     key={col.key}
-                    className="px-3 py-2 whitespace-nowrap"
+                    className="px-3 py-2 whitespace-nowrap text-gray-900"
                   >
                     {col.key === 'memo' ? (
                       <input

@@ -392,11 +392,11 @@ function getPerformance_(projectId, platform) {
     }
   }
 
-  // 3. 自社CVデータで上書き（全ソースを統合）
-  var allCvByAd = getAllCvByAd_();
-  if (Object.keys(allCvByAd).length > 0) {
+  // 3. ASP管理画面のCVデータで上書き（CV_API等のタブがあれば）
+  var aspCv = getAspCvData_();
+  if (aspCv.cvByAd) {
     all = all.map(function (item) {
-      var cv = allCvByAd[item.adName];
+      var cv = aspCv.cvByAd[item.adName];
       if (cv !== undefined) {
         return {
           id: item.id,
@@ -469,82 +469,6 @@ function getAspCvData_() {
   });
 
   return { date: maxDate, cvByAd: cvByAd };
-}
-
-/**
- * 外部スプレッドシートのCVデータを読む（れいわキャリア用）
- * 顧客データDB: A列=タイムスタンプ, P列(16)=配信媒体, Q列(17)=CR（広告名）
- * 1行 = 1CV。行数をカウントしてCV数とする。
- */
-function getExternalCvData_() {
-  var url = getConfig_('EXTERNAL_REIWA_CV_URL');
-  var name = getConfig_('EXTERNAL_REIWA_CV_NAME');
-  if (!url || !name) return {};
-
-  try {
-    var ss = SpreadsheetApp.openByUrl(url);
-    var sheet = ss.getSheetByName(name);
-    if (!sheet) return {};
-
-    var data = sheet.getDataRange().getValues();
-    var rows = data.slice(1); // ヘッダー除外
-
-    var COL_DATE = 0;      // A列: タイムスタンプ (0-indexed)
-    var COL_PLATFORM = 15; // P列: 配信媒体
-    var COL_CR = 16;       // Q列: CR（広告名）
-
-    // 最新日を探す
-    var maxDate = '';
-    rows.forEach(function (row) {
-      if (!row[COL_DATE]) return;
-      var d = Utilities.formatDate(new Date(row[COL_DATE]), 'Asia/Tokyo', 'yyyy-MM-dd');
-      if (d > maxDate) maxDate = d;
-    });
-
-    if (!maxDate) return {};
-
-    // 最新日のCV件数をCR名でカウント
-    var cvByAd = {};
-    rows.forEach(function (row) {
-      if (!row[COL_DATE]) return;
-      var d = Utilities.formatDate(new Date(row[COL_DATE]), 'Asia/Tokyo', 'yyyy-MM-dd');
-      if (d !== maxDate) return;
-      var crName = String(row[COL_CR] || '').trim();
-      if (!crName) return;
-      cvByAd[crName] = (cvByAd[crName] || 0) + 1;
-    });
-
-    return { date: maxDate, cvByAd: cvByAd };
-  } catch (err) {
-    Logger.log('getExternalCvData_ error: ' + err.message);
-    return {};
-  }
-}
-
-/**
- * 全CVソースを統合（DEN用CV_API + れいわ用外部シート）
- * 広告名をキーにしたCV件数マップを返す
- */
-function getAllCvByAd_() {
-  var combined = {};
-
-  // 1. DEN用: CV_APIタブ（ローカル）
-  var aspCv = getAspCvData_();
-  if (aspCv.cvByAd) {
-    Object.keys(aspCv.cvByAd).forEach(function (k) {
-      combined[k] = (combined[k] || 0) + aspCv.cvByAd[k];
-    });
-  }
-
-  // 2. れいわ用: 外部スプレッドシート
-  var extCv = getExternalCvData_();
-  if (extCv.cvByAd) {
-    Object.keys(extCv.cvByAd).forEach(function (k) {
-      combined[k] = (combined[k] || 0) + extCv.cvByAd[k];
-    });
-  }
-
-  return combined;
 }
 
 function getTargets_(projectId) {
