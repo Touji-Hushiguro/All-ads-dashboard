@@ -65,6 +65,7 @@ export interface AdPerformance {
   readonly isStopped: boolean;
   readonly rawAdId: string;
   readonly createdAt: string;
+  readonly memo?: string;
 }
 
 // ── KPI Summary ──
