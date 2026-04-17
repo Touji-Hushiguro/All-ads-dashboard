@@ -8,6 +8,7 @@ import { formatCurrency, formatPercent, formatNumber } from '@/lib/utils';
 import ColumnToggle from './ColumnToggle';
 
 const STORAGE_KEY = 'ad-dashboard-visible-columns-v2';
+const MEMO_STORAGE_KEY = 'ad-dashboard-memos';
 
 function getInitialVisibleKeys(): Set<string> {
   if (typeof window === 'undefined') {
@@ -37,6 +38,21 @@ export default function AdPerformanceTable({
 }: AdPerformanceTableProps) {
   const [visibleKeys, setVisibleKeys] = useState<Set<string>>(getInitialVisibleKeys);
   const [sort, setSort] = useState<SortConfig | null>(null);
+  const [memos, setMemos] = useState<Record<string, string>>(() => {
+    if (typeof window === 'undefined') return {};
+    try {
+      const saved = localStorage.getItem(MEMO_STORAGE_KEY);
+      return saved ? JSON.parse(saved) : {};
+    } catch { return {}; }
+  });
+
+  const handleMemoChange = useCallback((adName: string, value: string) => {
+    setMemos((prev) => {
+      const next = { ...prev, [adName]: value };
+      localStorage.setItem(MEMO_STORAGE_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify([...visibleKeys]));
@@ -167,7 +183,16 @@ export default function AdPerformanceTable({
                     key={col.key}
                     className="px-3 py-2 whitespace-nowrap"
                   >
-                    {col.key === 'isStopped' ? (
+                    {col.key === 'memo' ? (
+                      <input
+                        type="text"
+                        value={memos[row.adName] ?? ''}
+                        onChange={(e) => handleMemoChange(row.adName, e.target.value)}
+                        placeholder="メモ..."
+                        className="w-32 px-2 py-1 text-xs border border-gray-200 rounded
+                          focus:outline-none focus:ring-1 focus:ring-blue-400 bg-white"
+                      />
+                    ) : col.key === 'isStopped' ? (
                       <input
                         type="checkbox"
                         checked={row.isStopped}

@@ -21,4 +21,5 @@ export const AD_COLUMNS: readonly ColumnDef[] = [
   { key: 'lpvr', label: 'LPVR', format: 'percent', defaultVisible: false },
   { key: 'lpvc', label: 'LPVC', format: 'currency', defaultVisible: false },
   { key: 'isStopped', label: '停止', format: 'boolean', defaultVisible: true },
+  { key: 'memo', label: 'メモ', format: 'text', defaultVisible: true },
 ];
