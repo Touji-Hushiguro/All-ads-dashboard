@@ -608,6 +608,57 @@ function getTargets_(projectId) {
 }
 
 // ════════════════════════════════════════
+// Vercel PUSH（GAS → Vercelにデータ送信）
+// ════════════════════════════════════════
+
+/**
+ * 全プロジェクトのデータをVercelにPUSH
+ * 1分毎のトリガーから呼ばれる
+ */
+function pushDataToVercel_() {
+  var vercelUrl = getConfig_('VERCEL_PUSH_URL');
+  var pushSecret = getConfig_('VERCEL_PUSH_SECRET');
+  if (!vercelUrl || !pushSecret) return;
+
+  var headers = {
+    'Content-Type': 'application/json',
+    'x-api-key': pushSecret,
+  };
+
+  // 1. プロジェクト一覧をPUSH
+  var projects = getProjects_();
+  UrlFetchApp.fetch(vercelUrl, {
+    method: 'post',
+    headers: headers,
+    payload: JSON.stringify({ key: 'projects', data: projects }),
+    muteHttpExceptions: true,
+  });
+
+  // 2. 各プロジェクトのデータをPUSH
+  var memos = getMemos_();
+  projects.projects.forEach(function (p) {
+    var perf = getPerformance_(p.id);
+    var targets = getTargets_(p.id);
+    UrlFetchApp.fetch(vercelUrl, {
+      method: 'post',
+      headers: headers,
+      payload: JSON.stringify({
+        key: 'project_' + p.id,
+        data: {
+          performance: perf.performance,
+          targets: targets.targets,
+          memos: memos.memos,
+        },
+      }),
+      muteHttpExceptions: true,
+    });
+    Utilities.sleep(200);
+  });
+
+  Logger.log('Pushed to Vercel: ' + projects.projects.length + ' projects');
+}
+
+// ════════════════════════════════════════
 // データ書き込み
 // ════════════════════════════════════════
 
@@ -880,6 +931,14 @@ function writePerformanceData_(projectId, accountId, date, insights) {
 function runMetaSyncNow() {
   var result = syncAllMetaAccounts_();
   Logger.log('Manual sync result: ' + JSON.stringify(result, null, 2));
+
+  // Vercelにデータ送信
+  try {
+    pushDataToVercel_();
+  } catch (e) {
+    Logger.log('pushDataToVercel_ error: ' + e.message);
+  }
+
   return result;
 }
 

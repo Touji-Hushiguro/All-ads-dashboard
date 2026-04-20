@@ -2,85 +2,71 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import type { Project, AdPerformance, KpiTarget, Platform, PlatformTab } from '@/types';
+import { getProjects, getAdPerformance, getKpiTarget } from '@/lib/data-provider';
 import {
-  isGasConnected,
-  fetchProjects,
-  fetchPerformance,
-  fetchTargets,
-  fetchBatch,
-  fetchMemos,
-  updateTarget as gasUpdateTarget,
-} from '@/lib/api/gas-client';
-import {
-  getProjects,
-  getProjectBySlug,
-  getAdPerformance,
-  getKpiTarget,
-} from '@/lib/data-provider';
+  fetchProjectsFromCache,
+  fetchProjectDataFromCache,
+  type ProjectCacheData,
+} from '@/lib/api/data-client';
 
 // ══════════════════════════════════════
-// グローバルキャッシュ（コンポーネント間で共有）
+// グローバルキャッシュ
 // ══════════════════════════════════════
 
 interface CachedProjectData {
   readonly allData: readonly AdPerformance[];
   readonly kpiTarget: KpiTarget | null;
+  readonly memos: Record<string, string>;
   readonly fetchedAt: number;
 }
 
-/** プロジェクト別データキャッシュ（全コンポーネントで共有） */
 const projectCache = new Map<string, CachedProjectData>();
-
-/** キャッシュの有効期限: 5分（ポーリングで随時更新されるので長めでOK） */
 const CACHE_TTL = 5 * 60 * 1000;
-
-/** ポーリング間隔 */
-const AUTO_REFRESH_INTERVAL = 10_000; // 10秒
-
-/** 実行中のフェッチを重複排除するための Map */
+const AUTO_REFRESH_INTERVAL = 10_000;
 const inflightFetches = new Map<string, Promise<void>>();
 
-// ══════════════════════════════════════
-// 共通フェッチ関数（キャッシュ書き込み付き）
-// ══════════════════════════════════════
+function isVercelApiAvailable(): boolean {
+  return typeof window !== 'undefined';
+}
+
+function mapCacheToLocal(data: ProjectCacheData): CachedProjectData {
+  const allData: AdPerformance[] = data.performance.map((p) => ({
+    ...p,
+    platform: p.platform as Platform,
+    lpv: 0,
+    lpvr: 0,
+    lpvc: 0,
+    createdAt: '',
+  }));
+
+  const kpiTarget: KpiTarget | null = data.targets
+    ? {
+        ...data.targets,
+        id: 'target-' + data.targets.projectId,
+        projectId: data.targets.projectId,
+        platform: 'meta' as Platform,
+        updatedAt: '',
+      }
+    : null;
+
+  return {
+    allData,
+    kpiTarget,
+    memos: data.memos ?? {},
+    fetchedAt: Date.now(),
+  };
+}
 
 function fetchProjectData(projectId: string): Promise<void> {
-  // 既に同じprojectIdのフェッチが飛んでいたらそれを待つ（重複排除）
   const existing = inflightFetches.get(projectId);
   if (existing) return existing;
 
-  // バッチAPI（1リクエスト）にフォールバック → 2リクエスト
-  const promise = fetchBatch(projectId)
-    .catch(() =>
-      // バッチAPI未デプロイ時のフォールバック
-      Promise.all([fetchPerformance(projectId), fetchTargets(projectId)])
-        .then(([p, t]) => ({ performance: p.performance, targets: t.targets }))
-    )
-    .then((res) => {
-      const mapped: readonly AdPerformance[] = res.performance.map((p) => ({
-        ...p,
-        platform: p.platform as Platform,
-        lpv: 0,
-        lpvr: 0,
-        lpvc: 0,
-        createdAt: '',
-      }));
-
-      const kpiTarget: KpiTarget | null = res.targets
-        ? {
-            ...res.targets,
-            id: 'gas-target-' + projectId,
-            projectId: res.targets.projectId,
-            platform: 'meta' as Platform,
-            updatedAt: '',
-          }
-        : null;
-
-      projectCache.set(projectId, {
-        allData: mapped,
-        kpiTarget,
-        fetchedAt: Date.now(),
-      });
+  const promise = fetchProjectDataFromCache(projectId)
+    .then((data) => {
+      projectCache.set(projectId, mapCacheToLocal(data));
+    })
+    .catch((err) => {
+      console.error(`Failed to fetch project ${projectId}:`, err);
     })
     .finally(() => {
       inflightFetches.delete(projectId);
@@ -91,7 +77,7 @@ function fetchProjectData(projectId: string): Promise<void> {
 }
 
 // ══════════════════════════════════════
-// useGasProjects — 案件一覧（プリフェッチ付き）
+// useGasProjects
 // ══════════════════════════════════════
 
 interface UseGasProjectsResult {
@@ -104,10 +90,10 @@ export function useGasProjects(): UseGasProjectsResult {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (!isGasConnected()) return;
+    if (!isVercelApiAvailable()) return;
 
     setLoading(true);
-    fetchProjects()
+    fetchProjectsFromCache()
       .then((res) => {
         const mapped: readonly Project[] = res.projects.map((p) => ({
           id: p.id,
@@ -118,7 +104,7 @@ export function useGasProjects(): UseGasProjectsResult {
         }));
         setProjects(mapped);
 
-        // ★ 全プロジェクトのデータをバックグラウンドでプリフェッチ
+        // プリフェッチ
         mapped.forEach((p) => {
           if (!projectCache.has(p.id)) {
             fetchProjectData(p.id).catch(() => {});
@@ -133,7 +119,7 @@ export function useGasProjects(): UseGasProjectsResult {
 }
 
 // ══════════════════════════════════════
-// useGasPerformance — キャッシュ優先 + バックグラウンド更新
+// useGasPerformance
 // ══════════════════════════════════════
 
 interface UseGasPerformanceResult {
@@ -160,70 +146,38 @@ export function useGasPerformance(
   useEffect(() => {
     if (!projectId) return;
 
-    if (!isGasConnected()) {
+    if (!isVercelApiAvailable()) {
       setAllData(getAdPerformance(projectId));
       setKpiTarget(getKpiTarget(projectId, 'meta') ?? null);
       return;
     }
 
-    // ★ キャッシュがあれば即表示（ローディングなし）
+    // キャッシュがあれば即表示
     const cached = projectCache.get(projectId);
     if (cached) {
       setAllData(cached.allData);
       setKpiTarget(cached.kpiTarget);
-      // キャッシュが古ければバックグラウンドで更新
-      if (Date.now() - cached.fetchedAt > CACHE_TTL) {
-        fetchProjectData(projectId).then(() => {
-          if (!mountedRef.current) return;
-          const fresh = projectCache.get(projectId);
-          if (fresh) {
-            setAllData(fresh.allData);
-            setKpiTarget(fresh.kpiTarget);
-          }
-        }).catch(() => {});
-      }
     } else {
-      // キャッシュなし → ローディング表示してフェッチ
       setLoading(true);
     }
 
-    // フェッチ（キャッシュ有無に関わらず最新取得）
     const refresh = (showLoading: boolean) => {
-      const p = fetchProjectData(projectId);
-      if (showLoading) {
-        p.then(() => {
-          if (!mountedRef.current) return;
-          const data = projectCache.get(projectId);
-          if (data) {
-            setAllData(data.allData);
-            setKpiTarget(data.kpiTarget);
-          }
-        })
-        .catch((err) => console.error('Failed to fetch:', err))
-        .finally(() => {
-          if (mountedRef.current) setLoading(false);
-        });
-      } else {
-        p.then(() => {
-          if (!mountedRef.current) return;
-          const data = projectCache.get(projectId);
-          if (data) {
-            setAllData(data.allData);
-            setKpiTarget(data.kpiTarget);
-          }
-        }).catch(() => {});
-      }
+      fetchProjectData(projectId).then(() => {
+        if (!mountedRef.current) return;
+        const data = projectCache.get(projectId);
+        if (data) {
+          setAllData(data.allData);
+          setKpiTarget(data.kpiTarget);
+        }
+        if (showLoading) setLoading(false);
+      });
     };
 
-    // 初回フェッチ（キャッシュなければローディング付き）
     refresh(!cached);
-
-    // ポーリング
     const intervalId = setInterval(() => refresh(false), AUTO_REFRESH_INTERVAL);
     return () => clearInterval(intervalId);
   }, [projectId]);
 
-  // クライアント側プラットフォームフィルタ
   const data = useMemo<readonly AdPerformance[]>(() => {
     if (platformTab === 'all') return allData;
     return allData.filter((d) => d.platform === platformTab);
@@ -233,14 +187,18 @@ export function useGasPerformance(
     (field: string, value: number) => {
       if (!projectId) return;
       setKpiTarget((prev) => (prev ? { ...prev, [field]: value } : null));
-      if (isGasConnected()) {
-        gasUpdateTarget(projectId, field, value).catch((err) =>
-          console.error('Failed to update target:', err)
-        );
-      }
     },
     [projectId]
   );
 
   return { data, kpiTarget, loading, updateKpiTarget };
+}
+
+// ══════════════════════════════════════
+// useProjectMemos
+// ══════════════════════════════════════
+
+export function useProjectMemos(projectId: string | undefined): Record<string, string> {
+  const cached = projectId ? projectCache.get(projectId) : undefined;
+  return cached?.memos ?? {};
 }
