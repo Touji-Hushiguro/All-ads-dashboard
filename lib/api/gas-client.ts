@@ -141,3 +141,16 @@ export async function updateMemo(
 ): Promise<{ success: boolean }> {
   return gasPost({ action: 'updateMemo', adName, memo });
 }
+
+// ── Batch (performance + targets を1リクエストで取得) ──
+
+export interface GasBatchResponse {
+  readonly performance: GasPerformanceResponse['performance'];
+  readonly targets: GasTargetsResponse['targets'];
+}
+
+export async function fetchBatch(
+  projectId: string
+): Promise<GasBatchResponse> {
+  return gasGet<GasBatchResponse>({ action: 'batch', project: projectId });
+}

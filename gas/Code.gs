@@ -85,6 +85,12 @@ function doGet(e) {
       case 'memos':
         result = getMemos_();
         break;
+      case 'batch':
+        // performance + targets を1リクエストで返す
+        var perf = getPerformance_(e.parameter.project, e.parameter.platform);
+        var tgt = getTargets_(e.parameter.project);
+        result = { performance: perf.performance, targets: tgt.targets };
+        break;
       default:
         result = { error: 'Unknown action: ' + action };
     }
@@ -265,15 +271,38 @@ var G_COL = {
   DATE: 12,
 };
 
+/**
+ * 外部シートデータをCacheServiceでキャッシュ（60秒TTL）
+ * SpreadsheetApp.openByUrl は重いので、結果をキャッシュして高速化
+ */
+function getCachedSheetData_(sheetUrl, sheetName) {
+  var cache = CacheService.getScriptCache();
+  var cacheKey = 'sheet_' + sheetUrl.substring(sheetUrl.lastIndexOf('/d/') + 3, sheetUrl.lastIndexOf('/')) + '_' + sheetName;
+  var cached = cache.get(cacheKey);
+  if (cached) {
+    try { return JSON.parse(cached); } catch(e) { /* cache corrupted, refetch */ }
+  }
+  var ss = SpreadsheetApp.openByUrl(sheetUrl);
+  var sheet = ss.getSheetByName(sheetName);
+  if (!sheet) return null;
+  var data = sheet.getDataRange().getValues();
+  // CacheService max value size is 100KB. If data is too large, don't cache.
+  try {
+    var json = JSON.stringify(data);
+    if (json.length < 90000) {
+      cache.put(cacheKey, json, 60); // 60秒キャッシュ
+    }
+  } catch(e) { /* too large to cache */ }
+  return data;
+}
+
 function readGoogleExternalSheet_(sheetUrl, sheetName, projectId) {
   try {
-    var ss = SpreadsheetApp.openByUrl(sheetUrl);
-    var sheet = ss.getSheetByName(sheetName);
-    if (!sheet) {
+    var data = getCachedSheetData_(sheetUrl, sheetName);
+    if (!data) {
       Logger.log('External sheet not found: ' + sheetName);
       return [];
     }
-    var data = sheet.getDataRange().getValues();
     // 1行目=ヘッダー
     var rows = data.slice(1).filter(function (r) { return !!r[G_COL.DATE - 1]; });
 
